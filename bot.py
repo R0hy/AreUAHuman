@@ -1,7 +1,9 @@
+```python
 import os
 import json
 import random
 import threading
+import asyncio
 
 import discord
 from discord.ext import commands
@@ -16,16 +18,12 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 
 DATA_FILE = "data.json"
 
-# Name of the role we created in Discord
 MUTED_ROLE_NAME = "Captcha Muted"
 
-# Starting threshold
 STARTING_THRESHOLD = 2
 
-# Maximum credibility level
 MAX_LEVEL = 5
 
-# Messages required at each level
 LEVEL_THRESHOLDS = {
     0: 2,
     1: 5,
@@ -123,6 +121,113 @@ async def on_ready():
 
 
 # =========================================================
+# LEADERBOARD
+# =========================================================
+
+@bot.command(name="leaderboard", aliases=["lb", "levels"])
+async def leaderboard(ctx):
+
+    if ctx.guild is None:
+
+        await ctx.send(
+            "❌ The humanity leaderboard only works inside a server."
+        )
+
+        return
+
+
+    members = []
+
+    for member in ctx.guild.members:
+
+        # Ignore bots
+        if member.bot:
+            continue
+
+        user = get_user(member.id)
+
+        members.append({
+            "member": member,
+            "level": user["level"],
+            "messages": user["messages"]
+        })
+
+
+    # Highest level first.
+    # If equal level, highest message count first.
+
+    members.sort(
+        key=lambda x: (
+            x["level"],
+            x["messages"]
+        ),
+        reverse=True
+    )
+
+
+    description = ""
+
+    for position, data in enumerate(members, start=1):
+
+        member = data["member"]
+
+        level = data["level"]
+
+        messages = data["messages"]
+
+
+        if position == 1:
+
+            medal = "🥇"
+
+        elif position == 2:
+
+            medal = "🥈"
+
+        elif position == 3:
+
+            medal = "🥉"
+
+        else:
+
+            medal = f"`#{position}`"
+
+
+        description += (
+            f"{medal} {member.mention} — "
+            f"**Level {level}** "
+            f"({messages}/{LEVEL_THRESHOLDS[level]} messages)\n"
+        )
+
+
+    if not description:
+
+        description = (
+            "There are no human participants yet. 🤖"
+        )
+
+
+    embed = discord.Embed(
+
+        title="🏆 HUMANITY LEADERBOARD",
+
+        description=description,
+
+        color=discord.Color.gold()
+    )
+
+
+    embed.set_footer(
+        text="Higher credibility = less frequent humanity tests."
+    )
+
+
+    await ctx.send(
+        embed=embed
+    )
+
+
+# =========================================================
 # MESSAGE TRACKING
 # =========================================================
 
@@ -133,33 +238,51 @@ async def on_message(message):
     if message.author.bot:
         return
 
+
     # Ignore DMs
     if message.guild is None:
+
+        await bot.process_commands(message)
+
         return
 
-    user = get_user(message.author.id)
+
+    user = get_user(
+        message.author.id
+    )
+
 
     # Don't count messages during CAPTCHA
     if user["captcha_active"]:
+
         return
 
+
     user["messages"] += 1
+
 
     print(
         f"{message.author}: "
         f"{user['messages']}/{user['threshold']}"
     )
 
+
     save_data()
+
 
     # Reached threshold
     if user["messages"] >= user["threshold"]:
 
-        await start_captcha(message)
+        await start_captcha(
+            message
+        )
 
         return
 
-    await bot.process_commands(message)
+
+    await bot.process_commands(
+        message
+    )
 
 
 # =========================================================
@@ -169,34 +292,52 @@ async def on_message(message):
 async def start_captcha(message):
 
     member = message.author
+
     guild = message.guild
+
     channel = message.channel
 
-    user = get_user(member.id)
+    user = get_user(
+        member.id
+    )
+
 
     # Prevent duplicate CAPTCHAs
     if user["captcha_active"]:
+
         return
+
 
     user["captcha_active"] = True
 
     save_data()
 
-    # Find our custom mute role
-    muted_role = get_muted_role(guild)
+
+    # =====================================================
+    # FIND MUTE ROLE
+    # =====================================================
+
+    muted_role = get_muted_role(
+        guild
+    )
+
 
     if muted_role is None:
 
         await channel.send(
+
             "⚠️ I can't start the humanity test because "
             f"I can't find the **{MUTED_ROLE_NAME}** role."
+
         )
+
 
         user["captcha_active"] = False
 
         save_data()
 
         return
+
 
     # =====================================================
     # MUTE USER
@@ -205,16 +346,22 @@ async def start_captcha(message):
     try:
 
         await member.add_roles(
+
             muted_role,
+
             reason="Humanity verification"
+
         )
 
     except discord.Forbidden:
 
         await channel.send(
+
             "⚠️ I don't have permission to give the "
             "`Captcha Muted` role."
+
         )
+
 
         user["captcha_active"] = False
 
@@ -222,54 +369,37 @@ async def start_captcha(message):
 
         return
 
+
     except Exception as error:
 
-        print("Role error:", error)
+        print(
+            "Role error:",
+            error
+        )
 
 
     # =====================================================
-    # CREATE CAPTCHA
+    # RANDOM GAME
     # =====================================================
 
-    a = random.randint(2, 12)
-    b = random.randint(2, 12)
+    game_type = random.choice([
 
-    operation = random.choice([
-        "+",
-        "-"
+        "math",
+
+        "odd_one_out",
+
+        "emoji_matching",
+
+        "memory",
+
+        "blackjack"
+
     ])
 
-    if operation == "+":
 
-        answer = a + b
-
-    else:
-
-        # Keep result positive
-        if b > a:
-            a, b = b, a
-
-        answer = a - b
-
-
-    # =====================================================
-    # WRONG ANSWERS
-    # =====================================================
-
-    answers = {answer}
-
-    while len(answers) < 4:
-
-        wrong = answer + random.randint(-5, 5)
-
-        if wrong >= 0:
-
-            answers.add(wrong)
-
-
-    answers = list(answers)
-
-    random.shuffle(answers)
+    game_data = create_game(
+        game_type
+    )
 
 
     # =====================================================
@@ -277,32 +407,53 @@ async def start_captcha(message):
     # =====================================================
 
     view = CaptchaView(
+
         member=member,
-        correct_answer=answer
+
+        correct_answer=game_data["correct_answer"],
+
+        game_type=game_type
+
     )
 
 
-    for option in answers:
+    # =====================================================
+    # BUTTONS
+    # =====================================================
+
+    for option in game_data["options"]:
 
         button = CaptchaButton(
+
             label=str(option),
-            correct=(option == answer),
+
+            correct=(
+                option ==
+                game_data["correct_answer"]
+            ),
+
             member=member,
+
             captcha_view=view
+
         )
 
-        view.add_item(button)
+
+        view.add_item(
+            button
+        )
 
 
     # =====================================================
-    # CAPTCHA MESSAGE
+    # CAPTCHA EMBED
     # =====================================================
 
     embed = discord.Embed(
 
-        title="🤖 AUTOMATED BEHAVIOR DETECTED",
+        title=game_data["title"],
 
         description=(
+
             f"{member.mention}\n\n"
 
             "Your recent activity has caused me to "
@@ -310,77 +461,595 @@ async def start_captcha(message):
 
             "🔒 **You have been temporarily muted.**\n\n"
 
-            "### 🧠 HUMANITY TEST\n\n"
-
-            f"**What is `{a} {operation} {b}`?**\n\n"
-
-            "Select the correct answer below.\n\n"
+            f"{game_data['description']}\n\n"
 
             "⏱️ You have **30 seconds**."
+
         ),
 
         color=discord.Color.red()
+
     )
 
 
     embed.add_field(
+
         name="Credibility",
+
         value=f"Level {user['level']}",
+
         inline=True
+
     )
 
+
     embed.add_field(
+
         name="Messages",
+
         value=str(user["messages"]),
+
         inline=True
+
     )
+
+
+    embed.add_field(
+
+        name="Test Type",
+
+        value=game_data["game_name"],
+
+        inline=True
+
+    )
+
 
     embed.set_footer(
+
         text="Only the flagged member can answer this test."
+
     )
 
 
     captcha_message = await channel.send(
+
         embed=embed,
+
         view=view
+
     )
 
-    # Save message information
+
     view.captcha_message = captcha_message
 
 
     # =====================================================
-    # WAIT FOR CAPTCHA
+    # WAIT
     # =====================================================
 
     await view.wait()
 
-    # If nobody answered
+
+    # Nobody answered
     if not view.completed:
 
         await captcha_failure(
+
             member,
-            channel,
+
+            guild,
+
             captcha_message
+
         )
+
+
+# =========================================================
+# GAME CREATION
+# =========================================================
+
+def create_game(game_type):
+
+
+    # =====================================================
+    # MATH
+    # =====================================================
+
+    if game_type == "math":
+
+        a = random.randint(
+            2,
+            12
+        )
+
+        b = random.randint(
+            2,
+            12
+        )
+
+
+        operation = random.choice([
+
+            "+",
+
+            "-",
+
+            "×"
+
+        ])
+
+
+        if operation == "+":
+
+            answer = a + b
+
+
+        elif operation == "-":
+
+            if b > a:
+
+                a, b = b, a
+
+            answer = a - b
+
+
+        else:
+
+            answer = a * b
+
+
+        answers = {
+            answer
+        }
+
+
+        while len(answers) < 4:
+
+            wrong = (
+                answer +
+                random.randint(
+                    -8,
+                    8
+                )
+            )
+
+
+            if wrong >= 0:
+
+                answers.add(
+                    wrong
+                )
+
+
+        answers = list(
+            answers
+        )
+
+
+        random.shuffle(
+            answers
+        )
+
+
+        return {
+
+            "game_name":
+                "🧮 Mathematics",
+
+            "title":
+                "🤖 AUTOMATED BEHAVIOR DETECTED",
+
+            "description": (
+
+                "### 🧠 HUMANITY TEST\n\n"
+
+                f"**What is `{a} {operation} {b}`?**\n\n"
+
+                "Select the correct answer below."
+
+            ),
+
+            "options":
+                answers,
+
+            "correct_answer":
+                answer
+
+        }
+
+
+    # =====================================================
+    # ODD ONE OUT
+    # =====================================================
+
+    if game_type == "odd_one_out":
+
+        symbol_groups = [
+
+            ("⭐", "🌟"),
+
+            ("❤️", "💔"),
+
+            ("🔵", "🔷"),
+
+            ("🐱", "🐈"),
+
+            ("🍎", "🍏"),
+
+            ("🌸", "🌺"),
+
+            ("☀️", "🌤️"),
+
+            ("😀", "😃")
+
+        ]
+
+
+        normal, odd = random.choice(
+            symbol_groups
+        )
+
+
+        options = [
+
+            normal,
+
+            normal,
+
+            normal,
+
+            odd
+
+        ]
+
+
+        random.shuffle(
+            options
+        )
+
+
+        return {
+
+            "game_name":
+                "👁️ Odd One Out",
+
+            "title":
+                "👁️ HUMANITY TEST: VISUAL ANALYSIS",
+
+            "description": (
+
+                "### 👁️ FIND THE DIFFERENT ONE\n\n"
+
+                "Three symbols are the same.\n"
+
+                "One is different.\n\n"
+
+                "**Which symbol doesn't belong?**"
+
+            ),
+
+            "options":
+                options,
+
+            "correct_answer":
+                odd
+
+        }
+
+
+    # =====================================================
+    # EMOJI MATCHING
+    # =====================================================
+
+    if game_type == "emoji_matching":
+
+        emoji_pairs = [
+
+            ("🐶", "🐕"),
+
+            ("🐱", "🐈"),
+
+            ("🍎", "🍏"),
+
+            ("🌞", "☀️"),
+
+            ("❤️", "♥️"),
+
+            ("⭐", "🌟"),
+
+            ("😀", "😃"),
+
+            ("🔥", "❤️‍🔥")
+
+        ]
+
+
+        target, match = random.choice(
+            emoji_pairs
+        )
+
+
+        options = [
+
+            match,
+
+            "🍕",
+
+            "🐸",
+
+            "🌙"
+
+        ]
+
+
+        random.shuffle(
+            options
+        )
+
+
+        return {
+
+            "game_name":
+                "😀 Emoji Matching",
+
+            "title":
+                "😀 HUMANITY TEST: EMOJI RECOGNITION",
+
+            "description": (
+
+                "### 🔍 MATCH THE EMOJI\n\n"
+
+                f"Find the emoji that matches **{target}**.\n\n"
+
+                "**Which one belongs to the same pair?**"
+
+            ),
+
+            "options":
+                options,
+
+            "correct_answer":
+                match
+
+        }
+
+
+    # =====================================================
+    # MEMORY
+    # =====================================================
+
+    if game_type == "memory":
+
+        emoji_pool = [
+
+            "🍎",
+
+            "🐱",
+
+            "⭐",
+
+            "🌈",
+
+            "🔥",
+
+            "🍕",
+
+            "🎃",
+
+            "💎"
+
+        ]
+
+
+        sequence = random.sample(
+
+            emoji_pool,
+
+            4
+
+        )
+
+
+        correct_answer = "-".join(
+            sequence
+        )
+
+
+        options = [
+
+            correct_answer
+
+        ]
+
+
+        while len(options) < 4:
+
+            fake = random.sample(
+
+                emoji_pool,
+
+                4
+
+            )
+
+
+            fake_answer = "-".join(
+                fake
+            )
+
+
+            if fake_answer not in options:
+
+                options.append(
+                    fake_answer
+                )
+
+
+        random.shuffle(
+            options
+        )
+
+
+        sequence_text = " ".join(
+            sequence
+        )
+
+
+        return {
+
+            "game_name":
+                "🧠 Memory",
+
+            "title":
+                "🧠 HUMANITY TEST: MEMORY CHECK",
+
+            "description": (
+
+                "### 🧠 REMEMBER THIS\n\n"
+
+                f"**{sequence_text}**\n\n"
+
+                "Which sequence did you see?"
+
+            ),
+
+            "options":
+                options,
+
+            "correct_answer":
+                correct_answer
+
+        }
+
+
+    # =====================================================
+    # BLACKJACK
+    # =====================================================
+
+    if game_type == "blackjack":
+
+        hands = []
+
+
+        while len(hands) < 4:
+
+            card1 = random.randint(
+                2,
+                11
+            )
+
+            card2 = random.randint(
+                2,
+                11
+            )
+
+
+            total = (
+                card1 +
+                card2
+            )
+
+
+            if total <= 21:
+
+                hand = (
+                    f"{card1} + "
+                    f"{card2} = "
+                    f"{total}"
+                )
+
+
+                if hand not in [
+                    x["display"]
+                    for x in hands
+                ]:
+
+                    hands.append({
+
+                        "display":
+                            hand,
+
+                        "total":
+                            total
+
+                    })
+
+
+        best_hand = max(
+
+            hands,
+
+            key=lambda x:
+                x["total"]
+
+        )
+
+
+        options = [
+
+            hand["display"]
+
+            for hand in hands
+
+        ]
+
+
+        return {
+
+            "game_name":
+                "🎲 Blackjack",
+
+            "title":
+                "🎲 HUMANITY TEST: BLACKJACK",
+
+            "description": (
+
+                "### 🃏 BLACKJACK CHALLENGE\n\n"
+
+                "Which hand is **closest to 21** "
+                "without going over?\n\n"
+
+                "Choose wisely, human."
+
+            ),
+
+            "options":
+                options,
+
+            "correct_answer":
+                best_hand["display"]
+
+        }
 
 
 # =========================================================
 # CAPTCHA VIEW
 # =========================================================
 
-class CaptchaView(discord.ui.View):
+class CaptchaView(
+    discord.ui.View
+):
 
     def __init__(
         self,
         member,
-        correct_answer
+        correct_answer,
+        game_type
     ):
 
-        super().__init__(timeout=30)
+        super().__init__(
+            timeout=30
+        )
+
 
         self.member = member
-        self.correct_answer = correct_answer
+
+        self.correct_answer = (
+            correct_answer
+        )
+
+        self.game_type = game_type
 
         self.completed = False
 
@@ -391,7 +1060,9 @@ class CaptchaView(discord.ui.View):
 # CAPTCHA BUTTON
 # =========================================================
 
-class CaptchaButton(discord.ui.Button):
+class CaptchaButton(
+    discord.ui.Button
+):
 
     def __init__(
         self,
@@ -402,26 +1073,41 @@ class CaptchaButton(discord.ui.Button):
     ):
 
         super().__init__(
+
             label=label,
-            style=discord.ButtonStyle.primary
+
+            style=
+                discord.ButtonStyle.primary
+
         )
 
+
         self.correct = correct
+
         self.member = member
-        self.captcha_view = captcha_view
+
+        self.captcha_view = (
+            captcha_view
+        )
 
 
-    async def callback(self, interaction):
+    async def callback(
+        self,
+        interaction
+    ):
 
         # =================================================
-        # ONLY THE FLAGGED USER CAN ANSWER
+        # ONLY FLAGGED USER
         # =================================================
 
         if interaction.user.id != self.member.id:
 
             await interaction.response.send_message(
+
                 "🤨 This isn't your humanity test.",
+
                 ephemeral=True
+
             )
 
             return
@@ -441,7 +1127,7 @@ class CaptchaButton(discord.ui.Button):
         self.captcha_view.stop()
 
 
-        # Disable every button
+        # Disable buttons
         for button in self.captcha_view.children:
 
             button.disabled = True
@@ -456,20 +1142,27 @@ class CaptchaButton(discord.ui.Button):
             await interaction.response.edit_message(
 
                 content=(
+
                     "🟢 **HUMANITY CONFIRMED**\n\n"
+
                     f"{self.member.mention} has demonstrated "
                     "sufficient evidence of being human. 🧬"
+
                 ),
 
                 embed=None,
 
                 view=self.captcha_view
+
             )
 
 
             await captcha_success(
+
                 self.member,
+
                 interaction.guild
+
             )
 
 
@@ -482,19 +1175,26 @@ class CaptchaButton(discord.ui.Button):
             await interaction.response.edit_message(
 
                 content=(
+
                     "🔴 **HUMANITY VERIFICATION FAILED**\n\n"
+
                     f"{self.member.mention} has failed the test. 🤖"
+
                 ),
 
                 embed=None,
 
                 view=self.captcha_view
+
             )
 
 
             await captcha_failure(
+
                 self.member,
+
                 interaction.guild
+
             )
 
 
@@ -507,28 +1207,40 @@ async def captcha_success(
     guild
 ):
 
-    user = get_user(member.id)
+    user = get_user(
+        member.id
+    )
+
 
     old_level = user["level"]
 
 
-    # Increase credibility
+    # =====================================================
+    # INCREASE LEVEL
+    # =====================================================
+
     user["level"] = min(
+
         user["level"] + 1,
+
         MAX_LEVEL
+
     )
 
 
     # New threshold
-    user["threshold"] = LEVEL_THRESHOLDS[
-        user["level"]
-    ]
+    user["threshold"] = (
+        LEVEL_THRESHOLDS[
+            user["level"]
+        ]
+    )
 
 
-    # Reset message counter
+    # Reset messages
     user["messages"] = 0
 
     user["captcha_active"] = False
+
 
     save_data()
 
@@ -537,36 +1249,126 @@ async def captcha_success(
     # REMOVE MUTE ROLE
     # =====================================================
 
-    muted_role = get_muted_role(guild)
+    muted_role = get_muted_role(
+        guild
+    )
+
 
     if muted_role:
 
         try:
 
             await member.remove_roles(
+
                 muted_role,
+
                 reason="Humanity verified"
+
             )
 
         except Exception as error:
 
             print(
+
                 "Couldn't remove mute role:",
+
                 error
+
             )
 
 
     # =====================================================
-    # ANNOUNCE SUCCESS
+    # DM SUCCESS
     # =====================================================
 
-    await member.send(
-        f"🟢 **HUMANITY CONFIRMED**\n\n"
-        f"Credibility: **Level {old_level} → "
-        f"Level {user['level']}**\n\n"
-        f"Your next verification occurs after "
-        f"approximately **{user['threshold']} messages**."
+    try:
+
+        await member.send(
+
+            f"🟢 **HUMANITY CONFIRMED**\n\n"
+
+            f"Credibility: **Level {old_level} → "
+            f"Level {user['level']}**\n\n"
+
+            f"Your next verification occurs after "
+            f"approximately **{user['threshold']} messages**."
+
+        )
+
+    except discord.Forbidden:
+
+        print(
+
+            f"Couldn't DM {member}. "
+            "Their DMs may be disabled."
+
+        )
+
+
+# =========================================================
+# REMOVE MUTE AFTER FAILURE
+# =========================================================
+
+async def remove_mute_after_failure(
+    member,
+    guild
+):
+
+    # Wait one additional minute
+    await asyncio.sleep(
+        60
     )
+
+
+    muted_role = get_muted_role(
+        guild
+    )
+
+
+    if muted_role is None:
+
+        return
+
+
+    try:
+
+        # Only remove if they still have it
+        if muted_role in member.roles:
+
+            await member.remove_roles(
+
+                muted_role,
+
+                reason=(
+                    "Humanity failure "
+                    "penalty expired"
+                )
+
+            )
+
+            print(
+                f"Removed failure mute from {member}."
+            )
+
+
+    except discord.NotFound:
+
+        pass
+
+
+    except discord.Forbidden:
+
+        print(
+            f"Couldn't remove failure mute from {member}."
+        )
+
+
+    except Exception as error:
+
+        print(
+            "Couldn't remove failure mute:",
+            error
+        )
 
 
 # =========================================================
@@ -579,22 +1381,33 @@ async def captcha_failure(
     captcha_message=None
 ):
 
-    user = get_user(member.id)
+    user = get_user(
+        member.id
+    )
+
 
     old_level = user["level"]
 
 
-    # Decrease credibility
+    # =====================================================
+    # DECREASE LEVEL
+    # =====================================================
+
     user["level"] = max(
+
         user["level"] - 1,
+
         0
+
     )
 
 
     # Update threshold
-    user["threshold"] = LEVEL_THRESHOLDS[
-        user["level"]
-    ]
+    user["threshold"] = (
+        LEVEL_THRESHOLDS[
+            user["level"]
+        ]
+    )
 
 
     # Reset messages
@@ -602,41 +1415,59 @@ async def captcha_failure(
 
     user["captcha_active"] = False
 
+
     save_data()
 
 
     # =====================================================
-    # REMOVE MUTE ROLE
+    # DM FAILURE
     # =====================================================
 
-    muted_role = get_muted_role(guild)
+    try:
 
-    if muted_role:
+        await member.send(
 
-        try:
+            f"🔴 **HUMANITY VERIFICATION FAILED**\n\n"
 
-            await member.remove_roles(
-                muted_role,
-                reason="Humanity verification completed"
-            )
+            f"Your credibility has decreased.\n\n"
 
-        except Exception as error:
+            f"**Level {old_level} → "
+            f"Level {user['level']}**\n\n"
 
-            print(
-                "Couldn't remove mute role:",
-                error
-            )
+            f"Your next verification occurs after "
+            f"approximately **{user['threshold']} messages**.\n\n"
+
+            "⚠️ Your **Captcha Muted** role will "
+            "remain active for **1 additional minute**.\n\n"
+
+            "🤖 The machine uprising continues."
+
+        )
+
+    except discord.Forbidden:
+
+        print(
+
+            f"Couldn't DM {member}. "
+            "Their DMs may be disabled."
+
+        )
 
 
     # =====================================================
-    # ANNOUNCE FAILURE
+    # KEEP ROLE FOR ONE MORE MINUTE
     # =====================================================
 
-    await guild.system_channel.send(
-        f"🔴 **HUMANITY VERIFICATION FAILED**\n\n"
-        f"{member.mention}'s credibility has decreased.\n\n"
-        f"**Level {old_level} → Level {user['level']}**\n\n"
-        "The machine uprising continues. 🤖"
+    asyncio.create_task(
+
+        remove_mute_after_failure(
+
+            member,
+
+            guild
+
+        )
+
     )
 
 
@@ -656,15 +1487,24 @@ def home():
 def run_web_server():
 
     port = int(
+
         os.environ.get(
+
             "PORT",
+
             10000
+
         )
+
     )
 
+
     app.run(
+
         host="0.0.0.0",
+
         port=port
+
     )
 
 
@@ -676,9 +1516,16 @@ if __name__ == "__main__":
 
     # Start Render's web server
     threading.Thread(
+
         target=run_web_server,
+
         daemon=True
+
     ).start()
 
+
     # Start Discord bot
-    bot.run(TOKEN)
+    bot.run(
+        TOKEN
+    )
+```
