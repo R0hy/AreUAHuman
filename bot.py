@@ -515,7 +515,7 @@ async def start_captcha(message):
 
         name="Credibility",
 
-        value=f"Level {user['level']",
+        value=f"Level {user['level']}",
 
         inline=True
 
