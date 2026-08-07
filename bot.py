@@ -27,12 +27,12 @@ MAX_LEVEL = 5
 
 # Messages required at each level
 LEVEL_THRESHOLDS = {
-    0: 25,
-    1: 50,
-    2: 100,
-    3: 200,
-    4: 400,
-    5: 800
+    0: 2,
+    1: 5,
+    2: 10,
+    3: 20,
+    4: 25,
+    5: 30
 }
 
 
