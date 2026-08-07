@@ -20,7 +20,7 @@ DATA_FILE = "data.json"
 MUTED_ROLE_NAME = "Captcha Muted"
 
 # Starting threshold
-STARTING_THRESHOLD = 25
+STARTING_THRESHOLD = 2
 
 # Maximum credibility level
 MAX_LEVEL = 5
