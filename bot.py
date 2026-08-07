@@ -124,7 +124,10 @@ async def on_ready():
 # LEADERBOARD
 # =========================================================
 
-@bot.command(name="leaderboard", aliases=["lb", "levels"])
+@bot.command(
+    name="leaderboard",
+    aliases=["lb", "levels"]
+)
 async def leaderboard(ctx):
 
     if ctx.guild is None:
@@ -144,30 +147,46 @@ async def leaderboard(ctx):
         if member.bot:
             continue
 
-        user = get_user(member.id)
+        user = get_user(
+            member.id
+        )
 
         members.append({
+
             "member": member,
+
             "level": user["level"],
+
             "messages": user["messages"]
+
         })
 
 
     # Highest level first.
-    # If equal level, highest message count first.
+    # If levels are equal, highest message count first.
 
     members.sort(
+
         key=lambda x: (
+
             x["level"],
+
             x["messages"]
+
         ),
+
         reverse=True
+
     )
 
 
     description = ""
 
-    for position, data in enumerate(members, start=1):
+
+    for position, data in enumerate(
+        members,
+        start=1
+    ):
 
         member = data["member"]
 
@@ -194,9 +213,14 @@ async def leaderboard(ctx):
 
 
         description += (
+
             f"{medal} {member.mention} — "
+
             f"**Level {level}** "
-            f"({messages}/{LEVEL_THRESHOLDS[level]} messages)\n"
+
+            f"({messages}/"
+            f"{LEVEL_THRESHOLDS[level]} messages)\n"
+
         )
 
 
@@ -214,11 +238,17 @@ async def leaderboard(ctx):
         description=description,
 
         color=discord.Color.gold()
+
     )
 
 
     embed.set_footer(
-        text="Higher credibility = less frequent humanity tests."
+
+        text=(
+            "Higher credibility = "
+            "less frequent humanity tests."
+        )
+
     )
 
 
@@ -236,13 +266,16 @@ async def on_message(message):
 
     # Ignore bots
     if message.author.bot:
+
         return
 
 
     # Ignore DMs
     if message.guild is None:
 
-        await bot.process_commands(message)
+        await bot.process_commands(
+            message
+        )
 
         return
 
@@ -262,8 +295,12 @@ async def on_message(message):
 
 
     print(
+
         f"{message.author}: "
-        f"{user['messages']}/{user['threshold']}"
+
+        f"{user['messages']}/"
+        f"{user['threshold']}"
+
     )
 
 
@@ -410,7 +447,9 @@ async def start_captcha(message):
 
         member=member,
 
-        correct_answer=game_data["correct_answer"],
+        correct_answer=(
+            game_data["correct_answer"]
+        ),
 
         game_type=game_type
 
@@ -476,7 +515,7 @@ async def start_captcha(message):
 
         name="Credibility",
 
-        value=f"Level {user['level']}",
+        value=f"Level {user['level']",
 
         inline=True
 
@@ -507,7 +546,10 @@ async def start_captcha(message):
 
     embed.set_footer(
 
-        text="Only the flagged member can answer this test."
+        text=(
+            "Only the flagged member "
+            "can answer this test."
+        )
 
     )
 
@@ -525,24 +567,11 @@ async def start_captcha(message):
 
 
     # =====================================================
-    # WAIT
+    # WAIT FOR CAPTCHA
     # =====================================================
 
+    # The View itself handles the timeout.
     await view.wait()
-
-
-    # Nobody answered
-    if not view.completed:
-
-        await captcha_failure(
-
-            member,
-
-            guild,
-
-            captcha_message
-
-        )
 
 
 # =========================================================
@@ -607,11 +636,14 @@ def create_game(game_type):
         while len(answers) < 4:
 
             wrong = (
+
                 answer +
+
                 random.randint(
                     -8,
                     8
                 )
+
             )
 
 
@@ -954,15 +986,22 @@ def create_game(game_type):
             if total <= 21:
 
                 hand = (
+
                     f"{card1} + "
+
                     f"{card2} = "
+
                     f"{total}"
+
                 )
 
 
                 if hand not in [
+
                     x["display"]
+
                     for x in hands
+
                 ]:
 
                     hands.append({
@@ -1056,6 +1095,80 @@ class CaptchaView(
         self.captcha_message = None
 
 
+    # =====================================================
+    # TIMEOUT
+    # =====================================================
+
+    async def on_timeout(self):
+
+        # Prevent duplicate failure
+        if self.completed:
+
+            return
+
+
+        self.completed = True
+
+
+        # Disable every button
+        for button in self.children:
+
+            button.disabled = True
+
+
+        # Update the CAPTCHA message
+        if self.captcha_message:
+
+            try:
+
+                await self.captcha_message.edit(
+
+                    content=(
+
+                        "⏰ **HUMANITY TEST EXPIRED**\n\n"
+
+                        f"{self.member.mention} did not "
+                        "complete the humanity test in time.\n\n"
+
+                        "🔴 **Verification failed.**"
+
+                    ),
+
+                    embed=None,
+
+                    view=self
+
+                )
+
+            except Exception as error:
+
+                print(
+
+                    "Couldn't update expired CAPTCHA:",
+
+                    error
+
+                )
+
+
+        # Get guild
+        if self.captcha_message:
+
+            guild = self.captcha_message.guild
+
+            if guild:
+
+                await captcha_failure(
+
+                    self.member,
+
+                    guild,
+
+                    self.captcha_message
+
+                )
+
+
 # =========================================================
 # CAPTCHA BUTTON
 # =========================================================
@@ -1127,7 +1240,7 @@ class CaptchaButton(
         self.captcha_view.stop()
 
 
-        # Disable buttons
+        # Disable every button
         for button in self.captcha_view.children:
 
             button.disabled = True
@@ -1230,9 +1343,11 @@ async def captcha_success(
 
     # New threshold
     user["threshold"] = (
+
         LEVEL_THRESHOLDS[
             user["level"]
         ]
+
     )
 
 
@@ -1332,7 +1447,6 @@ async def remove_mute_after_failure(
 
     try:
 
-        # Only remove if they still have it
         if muted_role in member.roles:
 
             await member.remove_roles(
@@ -1346,8 +1460,12 @@ async def remove_mute_after_failure(
 
             )
 
+
             print(
-                f"Removed failure mute from {member}."
+
+                f"Removed failure mute "
+                f"from {member}."
+
             )
 
 
@@ -1359,15 +1477,21 @@ async def remove_mute_after_failure(
     except discord.Forbidden:
 
         print(
-            f"Couldn't remove failure mute from {member}."
+
+            f"Couldn't remove failure "
+            f"mute from {member}."
+
         )
 
 
     except Exception as error:
 
         print(
+
             "Couldn't remove failure mute:",
+
             error
+
         )
 
 
@@ -1404,9 +1528,11 @@ async def captcha_failure(
 
     # Update threshold
     user["threshold"] = (
+
         LEVEL_THRESHOLDS[
             user["level"]
         ]
+
     )
 
 
