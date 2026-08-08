@@ -1,6 +1,4 @@
-
 import os
-import json
 import random
 import threading
 import asyncio
@@ -9,14 +7,16 @@ import discord
 from discord.ext import commands
 from flask import Flask
 
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
 
 # =========================================================
 # SETTINGS
 # =========================================================
 
 TOKEN = os.getenv("DISCORD_TOKEN")
-
-DATA_FILE = "data.json"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 MUTED_ROLE_NAME = "Captcha Muted"
 
@@ -35,6 +35,171 @@ LEVEL_THRESHOLDS = {
 
 
 # =========================================================
+# CHECK ENVIRONMENT VARIABLES
+# =========================================================
+
+if not TOKEN:
+    raise RuntimeError(
+        "DISCORD_TOKEN environment variable is missing."
+    )
+
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL environment variable is missing."
+    )
+
+
+# =========================================================
+# DATABASE
+# =========================================================
+
+def get_db_connection():
+    return psycopg2.connect(DATABASE_URL)
+
+
+def initialize_database():
+
+    connection = get_db_connection()
+
+    try:
+
+        cursor = connection.cursor()
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                user_id BIGINT PRIMARY KEY,
+                messages INTEGER NOT NULL DEFAULT 0,
+                level INTEGER NOT NULL DEFAULT 0,
+                threshold INTEGER NOT NULL DEFAULT 2,
+                captcha_active BOOLEAN NOT NULL DEFAULT FALSE
+            )
+        """)
+
+        connection.commit()
+
+        cursor.close()
+
+    finally:
+
+        connection.close()
+
+
+def get_user(user_id):
+
+    user_id = int(user_id)
+
+    connection = get_db_connection()
+
+    try:
+
+        cursor = connection.cursor(
+            cursor_factory=RealDictCursor
+        )
+
+        cursor.execute(
+            """
+            SELECT
+                user_id,
+                messages,
+                level,
+                threshold,
+                captcha_active
+            FROM users
+            WHERE user_id = %s
+            """,
+            (user_id,)
+        )
+
+        user = cursor.fetchone()
+
+        if user is None:
+
+            cursor.execute(
+                """
+                INSERT INTO users (
+                    user_id,
+                    messages,
+                    level,
+                    threshold,
+                    captcha_active
+                )
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING
+                    user_id,
+                    messages,
+                    level,
+                    threshold,
+                    captcha_active
+                """,
+                (
+                    user_id,
+                    0,
+                    0,
+                    STARTING_THRESHOLD,
+                    False
+                )
+            )
+
+            user = cursor.fetchone()
+
+            connection.commit()
+
+        cursor.close()
+
+        return dict(user)
+
+    finally:
+
+        connection.close()
+
+
+def save_user(user_id, user):
+
+    user_id = int(user_id)
+
+    connection = get_db_connection()
+
+    try:
+
+        cursor = connection.cursor()
+
+        cursor.execute(
+            """
+            INSERT INTO users (
+                user_id,
+                messages,
+                level,
+                threshold,
+                captcha_active
+            )
+            VALUES (%s, %s, %s, %s, %s)
+
+            ON CONFLICT (user_id)
+            DO UPDATE SET
+                messages = EXCLUDED.messages,
+                level = EXCLUDED.level,
+                threshold = EXCLUDED.threshold,
+                captcha_active = EXCLUDED.captcha_active
+            """,
+            (
+                user_id,
+                user["messages"],
+                user["level"],
+                user["threshold"],
+                user["captcha_active"]
+            )
+        )
+
+        connection.commit()
+
+        cursor.close()
+
+    finally:
+
+        connection.close()
+
+
+# =========================================================
 # DISCORD BOT SETUP
 # =========================================================
 
@@ -47,54 +212,6 @@ bot = commands.Bot(
     command_prefix="!",
     intents=intents
 )
-
-
-# =========================================================
-# DATA
-# =========================================================
-
-def load_data():
-
-    try:
-
-        with open(DATA_FILE, "r") as file:
-            return json.load(file)
-
-    except (FileNotFoundError, json.JSONDecodeError):
-
-        return {}
-
-
-def save_data():
-
-    with open(DATA_FILE, "w") as file:
-
-        json.dump(
-            user_data,
-            file,
-            indent=4
-        )
-
-
-user_data = load_data()
-
-
-def get_user(user_id):
-
-    user_id = str(user_id)
-
-    if user_id not in user_data:
-
-        user_data[user_id] = {
-            "messages": 0,
-            "level": 0,
-            "threshold": STARTING_THRESHOLD,
-            "captcha_active": False
-        }
-
-        save_data()
-
-    return user_data[user_id]
 
 
 # =========================================================
@@ -116,8 +233,11 @@ def get_muted_role(guild):
 @bot.event
 async def on_ready():
 
+    initialize_database()
+
     print(f"Logged in as {bot.user}")
     print("🤖 Humanity Police is online.")
+    print("🗄️ PostgreSQL database connected.")
 
 
 # =========================================================
@@ -141,15 +261,20 @@ async def leaderboard(ctx):
 
     members = []
 
+
+    # IMPORTANT:
+    # Only members currently inside THIS server
+    # are included in the leaderboard.
+
     for member in ctx.guild.members:
 
         # Ignore bots
         if member.bot:
             continue
 
-        user = get_user(
-            member.id
-        )
+
+        user = get_user(member.id)
+
 
         members.append({
 
@@ -266,7 +391,6 @@ async def on_message(message):
 
     # Ignore bots
     if message.author.bot:
-
         return
 
 
@@ -287,7 +411,6 @@ async def on_message(message):
 
     # Don't count messages during CAPTCHA
     if user["captcha_active"]:
-
         return
 
 
@@ -304,7 +427,10 @@ async def on_message(message):
     )
 
 
-    save_data()
+    save_user(
+        message.author.id,
+        user
+    )
 
 
     # Reached threshold
@@ -341,13 +467,15 @@ async def start_captcha(message):
 
     # Prevent duplicate CAPTCHAs
     if user["captcha_active"]:
-
         return
 
 
     user["captcha_active"] = True
 
-    save_data()
+    save_user(
+        member.id,
+        user
+    )
 
 
     # =====================================================
@@ -371,7 +499,10 @@ async def start_captcha(message):
 
         user["captcha_active"] = False
 
-        save_data()
+        save_user(
+            member.id,
+            user
+        )
 
         return
 
@@ -402,7 +533,10 @@ async def start_captcha(message):
 
         user["captcha_active"] = False
 
-        save_data()
+        save_user(
+            member.id,
+            user
+        )
 
         return
 
@@ -451,7 +585,9 @@ async def start_captcha(message):
             game_data["correct_answer"]
         ),
 
-        game_type=game_type
+        game_type=game_type,
+
+        test_mode=False
 
     )
 
@@ -473,7 +609,9 @@ async def start_captcha(message):
 
             member=member,
 
-            captcha_view=view
+            captcha_view=view,
+
+            test_mode=False
 
         )
 
@@ -570,7 +708,6 @@ async def start_captcha(message):
     # WAIT FOR CAPTCHA
     # =====================================================
 
-    # The View itself handles the timeout.
     await view.wait()
 
 
@@ -579,7 +716,6 @@ async def start_captcha(message):
 # =========================================================
 
 def create_game(game_type):
-
 
     # =====================================================
     # MATH
@@ -1062,6 +1198,11 @@ def create_game(game_type):
         }
 
 
+    raise ValueError(
+        f"Unknown game type: {game_type}"
+    )
+
+
 # =========================================================
 # CAPTCHA VIEW
 # =========================================================
@@ -1074,7 +1215,8 @@ class CaptchaView(
         self,
         member,
         correct_answer,
-        game_type
+        game_type,
+        test_mode=False
     ):
 
         super().__init__(
@@ -1090,6 +1232,8 @@ class CaptchaView(
 
         self.game_type = game_type
 
+        self.test_mode = test_mode
+
         self.completed = False
 
         self.captcha_message = None
@@ -1103,7 +1247,6 @@ class CaptchaView(
 
         # Prevent duplicate failure
         if self.completed:
-
             return
 
 
@@ -1116,29 +1259,54 @@ class CaptchaView(
             button.disabled = True
 
 
-        # Update the CAPTCHA message
+        # Update CAPTCHA message
         if self.captcha_message:
 
             try:
 
-                await self.captcha_message.edit(
+                if self.test_mode:
 
-                    content=(
+                    await self.captcha_message.edit(
 
-                        "⏰ **HUMANITY TEST EXPIRED**\n\n"
+                        content=(
 
-                        f"{self.member.mention} did not "
-                        "complete the humanity test in time.\n\n"
+                            "⏰ **TEST EXPIRED**\n\n"
 
-                        "🔴 **Verification failed.**"
+                            f"{self.member.mention} "
+                            "did not answer in time.\n\n"
 
-                    ),
+                            "This was only a test, so "
+                            "no stats were changed."
 
-                    embed=None,
+                        ),
 
-                    view=self
+                        embed=None,
 
-                )
+                        view=self
+
+                    )
+
+                else:
+
+                    await self.captcha_message.edit(
+
+                        content=(
+
+                            "⏰ **HUMANITY TEST EXPIRED**\n\n"
+
+                            f"{self.member.mention} did not "
+                            "complete the humanity test in time.\n\n"
+
+                            "🔴 **Verification failed.**"
+
+                        ),
+
+                        embed=None,
+
+                        view=self
+
+                    )
+
 
             except Exception as error:
 
@@ -1151,7 +1319,14 @@ class CaptchaView(
                 )
 
 
-        # Get guild
+        # TEST MODE:
+        # Do not change database or roles.
+
+        if self.test_mode:
+            return
+
+
+        # Normal CAPTCHA
         if self.captcha_message:
 
             guild = self.captcha_message.guild
@@ -1182,7 +1357,8 @@ class CaptchaButton(
         label,
         correct,
         member,
-        captcha_view
+        captcha_view,
+        test_mode=False
     ):
 
         super().__init__(
@@ -1202,6 +1378,8 @@ class CaptchaButton(
         self.captcha_view = (
             captcha_view
         )
+
+        self.test_mode = test_mode
 
 
     async def callback(
@@ -1245,6 +1423,63 @@ class CaptchaButton(
 
             button.disabled = True
 
+
+        # =================================================
+        # TEST MODE
+        # =================================================
+
+        if self.test_mode:
+
+            if self.correct:
+
+                await interaction.response.edit_message(
+
+                    content=(
+
+                        "🟢 **TEST PASSED**\n\n"
+
+                        f"{self.member.mention} selected "
+                        "the correct answer. 🎉\n\n"
+
+                        "No level, message count, or "
+                        "database data was changed."
+
+                    ),
+
+                    embed=None,
+
+                    view=self.captcha_view
+
+                )
+
+            else:
+
+                await interaction.response.edit_message(
+
+                    content=(
+
+                        "🔴 **TEST FAILED**\n\n"
+
+                        f"{self.member.mention} selected "
+                        "the wrong answer. 🤖\n\n"
+
+                        "No level, message count, or "
+                        "database data was changed."
+
+                    ),
+
+                    embed=None,
+
+                    view=self.captcha_view
+
+                )
+
+            return
+
+
+        # =================================================
+        # NORMAL CAPTCHA
+        # =================================================
 
         # =================================================
         # CORRECT
@@ -1357,7 +1592,10 @@ async def captcha_success(
     user["captcha_active"] = False
 
 
-    save_data()
+    save_user(
+        member.id,
+        user
+    )
 
 
     # =====================================================
@@ -1542,7 +1780,10 @@ async def captcha_failure(
     user["captcha_active"] = False
 
 
-    save_data()
+    save_user(
+        member.id,
+        user
+    )
 
 
     # =====================================================
@@ -1594,6 +1835,248 @@ async def captcha_failure(
 
         )
 
+    )
+
+
+# =========================================================
+# TEST COMMAND SYSTEM
+# =========================================================
+
+async def run_test_game(
+    ctx,
+    game_type
+):
+
+    # =====================================================
+    # ONLY ALLOW TESTS INSIDE SERVERS
+    # =====================================================
+
+    if ctx.guild is None:
+
+        await ctx.send(
+            "❌ Game tests can only be used inside a server."
+        )
+
+        return
+
+
+    member = ctx.author
+
+
+    # =====================================================
+    # CREATE GAME
+    # =====================================================
+
+    game_data = create_game(
+        game_type
+    )
+
+
+    # =====================================================
+    # CREATE TEST VIEW
+    # =====================================================
+
+    view = CaptchaView(
+
+        member=member,
+
+        correct_answer=(
+            game_data["correct_answer"]
+        ),
+
+        game_type=game_type,
+
+        test_mode=True
+
+    )
+
+
+    # =====================================================
+    # CREATE BUTTONS
+    # =====================================================
+
+    for option in game_data["options"]:
+
+        button = CaptchaButton(
+
+            label=str(option),
+
+            correct=(
+                option ==
+                game_data["correct_answer"]
+            ),
+
+            member=member,
+
+            captcha_view=view,
+
+            test_mode=True
+
+        )
+
+
+        view.add_item(
+            button
+        )
+
+
+    # =====================================================
+    # TEST EMBED
+    # =====================================================
+
+    embed = discord.Embed(
+
+        title=game_data["title"],
+
+        description=(
+
+            f"{member.mention}\n\n"
+
+            "🧪 **TEST MODE**\n\n"
+
+            f"{game_data['description']}\n\n"
+
+            "⏱️ You have **30 seconds**.\n\n"
+
+            "This test does **not** affect your "
+            "level, messages, or credibility."
+
+        ),
+
+        color=discord.Color.blue()
+
+    )
+
+
+    embed.add_field(
+
+        name="Test Type",
+
+        value=game_data["game_name"],
+
+        inline=True
+
+    )
+
+
+    embed.add_field(
+
+        name="Database",
+
+        value="🟢 No changes",
+
+        inline=True
+
+    )
+
+
+    embed.set_footer(
+
+        text=(
+            "Only the person who started "
+            "the test can answer it."
+        )
+
+    )
+
+
+    captcha_message = await ctx.send(
+
+        embed=embed,
+
+        view=view
+
+    )
+
+
+    view.captcha_message = captcha_message
+
+
+    await view.wait()
+
+
+# =========================================================
+# INDIVIDUAL TEST COMMANDS
+# =========================================================
+
+@bot.command(
+    name="testmath"
+)
+async def test_math(ctx):
+
+    await run_test_game(
+        ctx,
+        "math"
+    )
+
+
+@bot.command(
+    name="testodd"
+)
+async def test_odd(ctx):
+
+    await run_test_game(
+        ctx,
+        "odd_one_out"
+    )
+
+
+@bot.command(
+    name="testemoji"
+)
+async def test_emoji(ctx):
+
+    await run_test_game(
+        ctx,
+        "emoji_matching"
+    )
+
+
+@bot.command(
+    name="testmemory"
+)
+async def test_memory(ctx):
+
+    await run_test_game(
+        ctx,
+        "memory"
+    )
+
+
+@bot.command(
+    name="testblackjack"
+)
+async def test_blackjack(ctx):
+
+    await run_test_game(
+        ctx,
+        "blackjack"
+    )
+
+
+@bot.command(
+    name="testcaptcha"
+)
+async def test_captcha(ctx):
+
+    game_type = random.choice([
+
+        "math",
+
+        "odd_one_out",
+
+        "emoji_matching",
+
+        "memory",
+
+        "blackjack"
+
+    ])
+
+
+    await run_test_game(
+        ctx,
+        game_type
     )
 
 
